@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Letterboxd Collaborators Finder</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.6.7/axios.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/water.css@2/out/dark.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #results, #debug {
+            margin-top: 20px;
+        }
+        #debug {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        #debugHeader {
+            display: none;
+        }
+        .columns {
+            display: flex;
+            justify-content: space-between;
+        }
+        .column {
+            width: 48%;
+        }
+        #letterboxdForm input {
+            width: 100%;
+        }
+    </style>
+    <meta property="og:image" content="https://mrdys.github.io/letterboxd-collabs/img/screenshot.png" />
+</head>
+<body>
+    <h1><img src="img/logo.png" style="width:5%;margin-right:1em">Letterboxd Collaborators Finder</h1>
+    <blockquote>
+        Waingro: You guys always work together?<br>
+        Michael: All the time.<br>
+        Waingro: Real tight crew, huh?<br>
+        Michael: Real tight.<br>
+        Waingro: Yeah, if this works good I'd consider going again, you know?<br>
+        Michael: Stop talking ok, slick?<br>
+        <footer>
+            <cite>Heat, 1995</cite>
+        </footer>
+    </blockquote>
+
+    <h2>What is this thing?</h2>
+    <p>You know how some directors have a stable of actors that they return to time and again? This will search out who those frequent collaborators are and give you a top 10, separated by cast and crew.</p>
+
+    <h2>How to use</h2>
+    <p>Paste in the URL of anyone on Letterboxd. The credit matters. For example, if you wanted to see the collaborators where Yorgos Lanthimos was director, you would use: <em>https://letterboxd.com/director/yorgos-lanthimos/</em>, if you wanted to see his collaborators where he was a producer, you'd use: <em>https://letterboxd.com/producer/yorgos-lanthimos/</em></p>
+    <p>Because it has to find the credits for each film listed, it will take a while. You will see updates scrolling in the Activity box below. The more credits it has to go through, the longer it will take. Also, the more you use it, the more likely you are to be rate-limited. Take breaks. Be patient.</p>
+
+    <form id="letterboxdForm">
+        <label for="letterboxdUrl">Enter Letterboxd URL:</label>
+        <input type="url" id="letterboxdUrl" required>
+        <button type="submit">Find Collaborators</button>
+    </form>
+    <div id="results"></div>
+    <h3 id="debugHeader">Activity:</h3>
+    <div id="debug"></div>
+
+    <br>
+    <br>
+    <br>
+    <hr>
+    <h2>Credits</h2>
+    <p>
+        Project by <strong>Sean Hannan</strong>. <a href="mailto:seanphannan@gmail.com">Email</a> | <a href="https://twitter.com/MrDys">Twitter</a> | <a href="https://letterboxd.com/MrDys/">Letterboxd</a> | <a href="https://github.com/MrDys">GitHub</a>
+    </p>
+    <p>
+        Uses elements from <a href="https://letterboxd.com">Letterboxd</a>. <a href="https://letterboxd.com/about/pro/">Support those fine folks.</a> They are good people.
+    </p>
+    <script>
+        function log(message) {
+            const debugDiv = document.getElementById('debug');
+            debugDiv.innerHTML += message + '<br>';
+            debugDiv.scrollTop = debugDiv.scrollHeight;
+        }
+
+        async function fetchWithRetry(url, maxRetries = 15) {
+            let retries = 0;
+            while (retries < maxRetries) {
+                try {
+                    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+                    const response = await axios.get(proxyUrl);
+                    log(`Successfully fetched page: ${url}`);
+                    return response.data.contents;
+                } catch (error) {
+                    retries++;
+                    log(`Error fetching page ${url} (Attempt ${retries}/${maxRetries}): ${error.message}`);
+                    if (retries === maxRetries) {
+                        throw error;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 1000 * retries)); // Exponential backoff
+                }
+            }
+        }
+
+        async function staggeredFetch(filmElement, index, totalFilms, mainPersonName, castCollaborators, crewCollaborators) {
+            const filmUrl = filmElement.getAttribute('data-film-slug');
+            const filmTitle = filmElement.children[0].getAttribute('alt');
+            if (filmUrl) {
+                log(`Processing film ${index + 1}/${totalFilms}: ${filmUrl}`);
+                try {
+                    const filmHtml = await fetchWithRetry(`https://letterboxd.com/film/${filmUrl}`);
+                    const filmDoc = new DOMParser().parseFromString(filmHtml, 'text/html');
+                    
+                    // Extract cast collaborators
+                    const castList = filmDoc.querySelectorAll('div.cast-list > p');
+                    castList.forEach(castItem => {
+                        const castElements = castItem.querySelectorAll('a');
+                        log(`Found ${castElements.length} cast credits for ${filmUrl}`);
+                        
+                        castElements.forEach(cast => {
+                            addCollaborator(cast.textContent.trim(), cast.href, filmTitle, castCollaborators, mainPersonName);
+                        });
+                    });
+
+                    // Extract crew collaborators
+                    const crewList = filmDoc.querySelectorAll('div#tab-crew a');
+                    crewList.forEach(element => {
+                        const name = element.textContent.trim();
+                        addCollaborator(name, element.href, filmTitle, crewCollaborators, mainPersonName);
+                    });
+                    log(`Processed crew list for ${filmUrl}`);
+                } catch (error) {
+                    log(`Error processing film ${filmUrl}: ${error.message}`);
+                    log(`Error details: ${JSON.stringify(error)}`);
+                }
+            } else {
+                log(`Warning: Could not find film URL for element ${index + 1}`);
+            }
+        }
+
+        async function extractCollaborators(html, mainPersonName) {
+            log('Extracting collaborators from main page');
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            const castCollaborators = {};
+            const crewCollaborators = {};
+
+            const filmElements = doc.querySelectorAll('.film-poster');
+            log(`Found ${filmElements.length} film elements`);
+
+            const filmPromises = Array.from(filmElements).map((film, index) => 
+                new Promise(resolve => {
+                    setTimeout(() => {
+                        resolve(staggeredFetch(film, index, filmElements.length, mainPersonName, castCollaborators, crewCollaborators));
+                    }, index * (Math.random() * 50 + 50)); // Stagger start times
+                })
+            );
+
+            await Promise.all(filmPromises);
+            updateResults(castCollaborators, crewCollaborators);
+        }
+
+        function addCollaborator(name, url, filmTitle, collaborators, mainPersonName) {
+            if (name !== 'Show All…' && new URL(url).pathname.split('/')[2] !== mainPersonName) {
+                if (!collaborators[name]) {
+                    collaborators[name] = { count: 0, movies: new Set(), url: new URL(url).pathname };
+                }
+                if (!collaborators[name].movies.has(filmTitle)) {
+                    collaborators[name].count += 1;
+                    collaborators[name].movies.add(filmTitle);
+                }
+                log(`Added collaborator: ${name} (${filmTitle})`);
+            }
+        }
+
+        function updateResults(castCollaborators, crewCollaborators) {
+            const resultsDiv = document.getElementById('results');
+            const sortedCastCollaborators = Object.entries(castCollaborators)
+                .sort((a, b) => b[1].count - a[1].count)
+                .slice(0, 10);
+            const sortedCrewCollaborators = Object.entries(crewCollaborators)
+                .sort((a, b) => b[1].count - a[1].count)
+                .slice(0, 10);
+
+            let html = '<div class="columns">';
+            html += '<div class="column">';
+            html += '<h2>Top 10 Cast Collaborators:</h2><ul>';
+            sortedCastCollaborators.forEach(([name, data]) => {
+                html += `<li><a href="https://letterboxd.com${data.url}" target="_blank">${name}</a>: ${data.count} collaboration${data.count > 1 ? 's' : ''}<br>
+                         <strong>Movies</strong>: ${Array.from(data.movies).join(', ')}</li>`;
+            });
+            html += '</ul></div>';
+
+            html += '<div class="column">';
+            html += '<h2>Top 10 Crew Collaborators:</h2><ul>';
+            sortedCrewCollaborators.forEach(([name, data]) => {
+                html += `<li><a href="https://letterboxd.com${data.url}" target="_blank">${name}</a>: ${data.count} collaboration${data.count > 1 ? 's' : ''}<br>
+                         <strong>Movies</strong>: ${Array.from(data.movies).join(', ')}</li>`;
+            });
+            html += '</ul></div>';
+            html += '</div>';
+
+            resultsDiv.innerHTML = html;
+            log(`Updated results with ${Object.keys(castCollaborators).length} cast collaborators and ${Object.keys(crewCollaborators).length} crew collaborators`);
+        }
+
+        document.getElementById('letterboxdForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = document.getElementById('letterboxdUrl').value;
+            const resultsDiv = document.getElementById('results');
+            const debugHeader = document.getElementById('debugHeader');
+            const debugDiv = document.getElementById('debug');
+            
+            resultsDiv.innerHTML = 'Loading…';
+            debugHeader.style.display = 'block';
+            debugDiv.innerHTML = '';
+            log(`Starting process for URL: ${url}`);
+            
+            try {
+                const html = await fetchWithRetry(url);
+                log('Main page fetched successfully. Starting to extract collaborators.');
+                const mainPersonName = new URL(url).pathname.split('/')[2]; // Extract name from URL
+                await extractCollaborators(html, mainPersonName);
+            } catch (error) {
+                resultsDiv.innerHTML = 'Error: ' + error.message;
+                log(`Fatal error: ${error.message}`);
+            }
+        });
+    </script>
+</body>
+</html>
